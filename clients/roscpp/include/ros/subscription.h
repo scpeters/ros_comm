@@ -1,4 +1,41 @@
 /*
+*
+* Copyright (c) 2014
+*
+* micROS Team, http://micros.nudt.edu.cn
+* National University of Defense Technology
+* All rights reserved.	
+*
+* Authors: Bo Ding (modified base on the official ROS kernel)
+* Last modified date: 2014-09-17
+*
+* Redistribution and use in source and binary forms, with or without
+* modification, are permitted provided that the following conditions are met:
+*   * Redistributions of source code must retain the above copyright notice,
+*     this list of conditions and the following disclaimer.
+*   * Redistributions in binary form must reproduce the above copyright
+*     notice, this list of conditions and the following disclaimer in the
+*     documentation and/or other materials provided with the distribution.
+*   * Neither the name of micROS Team or National University of Defense
+*     Technology nor the names of its contributors may be used to endorse or
+*     promote products derived from this software without specific prior 
+*     written permission.
+*
+* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+* AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+* IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+* ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+* LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+* CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+* SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+* INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+* CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+* ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+* POSSIBILITY OF SUCH DAMAGE.
+*
+*/
+
+/*
  * Copyright (C) 2008, Morgan Quigley and Willow Garage, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -41,6 +78,11 @@
 #include <boost/shared_ptr.hpp>
 #include <boost/enable_shared_from_this.hpp>
 
+#include "ros/dds_broker.h"
+#include "ros/dds_listener.h"
+
+#include "ros/qos_options.h"
+
 namespace ros
 {
 
@@ -65,7 +107,10 @@ typedef boost::shared_ptr<SubscriptionCallbackHelper> SubscriptionCallbackHelper
 class ROSCPP_DECL Subscription : public boost::enable_shared_from_this<Subscription>
 {
 public:
-  Subscription(const std::string &name, const std::string& md5sum, const std::string& datatype, const TransportHints& transport_hints);
+  Subscription(const std::string &name, const std::string& md5sum, const std::string& datatype,
+               const TransportHints& transport_hints);
+  Subscription(const std::string &name, const std::string& md5sum, const std::string& datatype,
+               const TransportHints& transport_hints, const SubscribeQoSOptions& qos_ops);
   virtual ~Subscription();
 
   /**
@@ -92,11 +137,16 @@ public:
   /**
    * \brief Returns whether this Subscription has been dropped or not
    */
-  bool isDropped() { return dropped_; }
+  bool isDropped()
+  {
+    return dropped_;
+  }
   XmlRpc::XmlRpcValue getStats();
   void getInfo(XmlRpc::XmlRpcValue& info);
 
-  bool addCallback(const SubscriptionCallbackHelperPtr& helper, const std::string& md5sum, CallbackQueueInterface* queue, int32_t queue_size, const VoidConstPtr& tracked_object, bool allow_concurrent_callbacks);
+  bool addCallback(const SubscriptionCallbackHelperPtr& helper, const std::string& md5sum,
+                   CallbackQueueInterface* queue, int32_t queue_size, const VoidConstPtr& tracked_object,
+                   bool allow_concurrent_callbacks);
   void removeCallback(const SubscriptionCallbackHelperPtr& helper);
 
   typedef std::map<std::string, std::string> M_string;
@@ -105,7 +155,9 @@ public:
    * \brief Called to notify that a new message has arrived from a publisher.
    * Schedules the callback for invokation with the callback queue
    */
-  uint32_t handleMessage(const SerializedMessage& m, bool ser, bool nocopy, const boost::shared_ptr<M_string>& connection_header, const PublisherLinkPtr& link);
+  uint32_t handleMessage(const SerializedMessage& m, bool ser, bool nocopy,
+                         const boost::shared_ptr<M_string>& connection_header, const PublisherLinkPtr& link);
+  uint32_t handleMessage(const SerializedMessage& m, std::string caller_id);
 
   const std::string datatype();
   const std::string md5sum();
@@ -115,65 +167,79 @@ public:
    */
   void removePublisherLink(const PublisherLinkPtr& pub_link);
 
-  const std::string& getName() const { return name_; }
-  uint32_t getNumCallbacks() const { return callbacks_.size(); }
+  const std::string& getName() const
+  {
+    return name_;
+  }
+  uint32_t getNumCallbacks() const
+  {
+    return callbacks_.size();
+  }
   uint32_t getNumPublishers();
 
   // We'll keep a list of these objects, representing in-progress XMLRPC 
   // connections to other nodes.
   class ROSCPP_DECL PendingConnection : public ASyncXMLRPCConnection
   {
-    public:
-      PendingConnection(XmlRpc::XmlRpcClient* client, TransportUDPPtr udp_transport, const SubscriptionWPtr& parent, const std::string& remote_uri)
-      : client_(client)
-      , udp_transport_(udp_transport)
-      , parent_(parent)
-      , remote_uri_(remote_uri)
-      {}
+  public:
+    PendingConnection(XmlRpc::XmlRpcClient* client, TransportUDPPtr udp_transport, const SubscriptionWPtr& parent,
+                      const std::string& remote_uri) :
+        client_(client), udp_transport_(udp_transport), parent_(parent), remote_uri_(remote_uri)
+    {
+    }
 
-      ~PendingConnection()
+    ~PendingConnection()
+    {
+      delete client_;
+    }
+
+    XmlRpc::XmlRpcClient* getClient() const
+    {
+      return client_;
+    }
+    TransportUDPPtr getUDPTransport() const
+    {
+      return udp_transport_;
+    }
+
+    virtual void addToDispatch(XmlRpc::XmlRpcDispatch* disp)
+    {
+      disp->addSource(client_, XmlRpc::XmlRpcDispatch::WritableEvent | XmlRpc::XmlRpcDispatch::Exception);
+    }
+
+    virtual void removeFromDispatch(XmlRpc::XmlRpcDispatch* disp)
+    {
+      disp->removeSource(client_);
+    }
+
+    virtual bool check()
+    {
+      SubscriptionPtr parent = parent_.lock();
+      if (!parent)
       {
-        delete client_;
+        return true;
       }
 
-      XmlRpc::XmlRpcClient* getClient() const { return client_; }
-      TransportUDPPtr getUDPTransport() const { return udp_transport_; }
-
-      virtual void addToDispatch(XmlRpc::XmlRpcDispatch* disp)
+      XmlRpc::XmlRpcValue result;
+      if (client_->executeCheckDone(result))
       {
-        disp->addSource(client_, XmlRpc::XmlRpcDispatch::WritableEvent | XmlRpc::XmlRpcDispatch::Exception);
+        parent->pendingConnectionDone(boost::dynamic_pointer_cast<PendingConnection>(shared_from_this()), result);
+        return true;
       }
 
-      virtual void removeFromDispatch(XmlRpc::XmlRpcDispatch* disp)
-      {
-        disp->removeSource(client_);
-      }
+      return false;
+    }
 
-      virtual bool check()
-      {
-        SubscriptionPtr parent = parent_.lock();
-        if (!parent)
-        {
-          return true;
-        }
+    const std::string& getRemoteURI()
+    {
+      return remote_uri_;
+    }
 
-        XmlRpc::XmlRpcValue result;
-        if (client_->executeCheckDone(result))
-        {
-          parent->pendingConnectionDone(boost::dynamic_pointer_cast<PendingConnection>(shared_from_this()), result);
-          return true;
-        }
-
-        return false;
-      }
-
-      const std::string& getRemoteURI() { return remote_uri_; }
-
-    private:
-      XmlRpc::XmlRpcClient* client_;
-      TransportUDPPtr udp_transport_;
-      SubscriptionWPtr parent_;
-      std::string remote_uri_;
+  private:
+    XmlRpc::XmlRpcClient* client_;
+    TransportUDPPtr udp_transport_;
+    SubscriptionWPtr parent_;
+    std::string remote_uri_;
   };
   typedef boost::shared_ptr<PendingConnection> PendingConnectionPtr;
 
@@ -224,9 +290,13 @@ private:
   V_PublisherLink publisher_links_;
   boost::mutex publisher_links_mutex_;
 
+  DDS::DataReaderListener_var dds_listener_;
+
   TransportHints transport_hints_;
 
   StatisticsLogger statistics_;
+
+  SubscribeQoSOptions qos_ops_;
 
   struct LatchInfo
   {
