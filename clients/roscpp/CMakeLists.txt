@@ -18,16 +18,17 @@ list(GET roscpp_VERSION_LIST 2 roscpp_VERSION_PATCH)
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/include/ros/common.h.in ${CATKIN_DEVEL_PREFIX}/${CATKIN_GLOBAL_INCLUDE_DESTINATION}/ros/common.h)
 
-find_package(Boost REQUIRED COMPONENTS signals filesystem system)
+find_package(Boost REQUIRED COMPONENTS signals filesystem system )
 
-include_directories(include ${CATKIN_DEVEL_PREFIX}/${CATKIN_GLOBAL_INCLUDE_DESTINATION}/ros ${catkin_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS})
+include_directories(include ${CATKIN_DEVEL_PREFIX}/${CATKIN_GLOBAL_INCLUDE_DESTINATION}/ros ${catkin_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS} "/root/OpenSpliceDDS6.4/install/HDE/x86_64.linux/include" "/root/OpenSpliceDDS6.4/install/HDE/x86_64.linux/include/sys" "/root/OpenSpliceDDS6.4/install/HDE/x86_64.linux/include/dcps/C++/SACPP")
+link_directories("/root/OpenSpliceDDS6.4/install/HDE/x86_64.linux/lib")
 
 add_message_files(
   DIRECTORY msg
   FILES Logger.msg
 )
 
-add_service_files(
+add_service_files( 
   DIRECTORY srv
   FILES Empty.srv GetLoggers.srv SetLoggerLevel.srv
 )
@@ -114,11 +115,17 @@ add_library(roscpp
   src/libros/poll_set.cpp
   src/libros/service.cpp
   src/libros/this_node.cpp
+  src/libros/dds_broker.cpp
+  src/libros/dds_message.cpp
+  src/libros/dds_messageDcps.cpp
+  src/libros/dds_messageDcps_impl.cpp
+  src/libros/dds_messageSplDcps.cpp
+  src/libros/dds_listener.cpp
   )
 
 add_dependencies(roscpp roscpp_gencpp rosgraph_msgs_gencpp std_msgs_gencpp)
 
-target_link_libraries(roscpp
+target_link_libraries(roscpp dcpssacpp ddskernel
   ${catkin_LIBRARIES}
   ${Boost_LIBRARIES}
   )

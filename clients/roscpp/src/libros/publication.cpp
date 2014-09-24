@@ -1,4 +1,41 @@
 /*
+*
+* Copyright (c) 2014
+*
+* micROS Team, http://micros.nudt.edu.cn
+* National University of Defense Technology
+* All rights reserved.	
+*
+* Authors: Bo Ding (modified base on the official ROS kernel)
+* Last modified date: 2014-09-17
+*
+* Redistribution and use in source and binary forms, with or without
+* modification, are permitted provided that the following conditions are met:
+*   * Redistributions of source code must retain the above copyright notice,
+*     this list of conditions and the following disclaimer.
+*   * Redistributions in binary form must reproduce the above copyright
+*     notice, this list of conditions and the following disclaimer in the
+*     documentation and/or other materials provided with the distribution.
+*   * Neither the name of micROS Team or National University of Defense
+*     Technology nor the names of its contributors may be used to endorse or
+*     promote products derived from this software without specific prior 
+*     written permission.
+*
+* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+* AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+* IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+* ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+* LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+* CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+* SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+* INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+* CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+* ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+* POSSIBILITY OF SUCH DAMAGE.
+*
+*/
+
+/*
  * Copyright (C) 2008, Morgan Quigley and Willow Garage, Inc.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -33,17 +70,17 @@
 #include "ros/serialization.h"
 #include <std_msgs/Header.h>
 
+#include "ros/dds_broker.h"
+
 namespace ros
 {
 
 class PeerConnDisconnCallback : public CallbackInterface
 {
 public:
-  PeerConnDisconnCallback(const SubscriberStatusCallback& callback, const SubscriberLinkPtr& sub_link, bool use_tracked_object, const VoidConstWPtr& tracked_object)
-  : callback_(callback)
-  , sub_link_(sub_link)
-  , use_tracked_object_(use_tracked_object)
-  , tracked_object_(tracked_object)
+  PeerConnDisconnCallback(const SubscriberStatusCallback& callback, const SubscriberLinkPtr& sub_link,
+                          bool use_tracked_object, const VoidConstWPtr& tracked_object) :
+      callback_(callback), sub_link_(sub_link), use_tracked_object_(use_tracked_object), tracked_object_(tracked_object)
   {
   }
 
@@ -73,24 +110,24 @@ private:
   VoidConstWPtr tracked_object_;
 };
 
-Publication::Publication(const std::string &name,
-                         const std::string &datatype,
-                         const std::string &_md5sum,
-                         const std::string& message_definition,
-                         size_t max_queue,
-                         bool latch,
-                         bool has_header)
-: name_(name),
-  datatype_(datatype),
-  md5sum_(_md5sum),
-  message_definition_(message_definition),
-  max_queue_(max_queue),
-  seq_(0),
-  dropped_(false),
-  latch_(latch),
-  has_header_(has_header),
-  intraprocess_subscriber_count_(0)
+Publication::Publication(const std::string &name, const std::string &datatype, const std::string &_md5sum,
+                         const std::string& message_definition, size_t max_queue, bool latch, bool has_header) :
+    name_(name), datatype_(datatype), md5sum_(_md5sum), message_definition_(message_definition), max_queue_(max_queue), seq_(
+        0), dropped_(false), latch_(latch), has_header_(has_header), intraprocess_subscriber_count_(0)
 {
+  //Tell the DDSBroker to precreate a writer to avoid performance lag
+  ROSDDS::DDSBroker::instance()->createWriter(name_, latch, qos_ops_);
+}
+
+Publication::Publication(const std::string &name, const std::string &datatype, const std::string &_md5sum,
+                         const std::string& message_definition, size_t max_queue, bool latch, bool has_header,
+                         const AdvertiseQoSOptions& qos_ops) :
+    name_(name), datatype_(datatype), md5sum_(_md5sum), message_definition_(message_definition), max_queue_(max_queue), seq_(
+        0), dropped_(false), latch_(latch), has_header_(has_header), intraprocess_subscriber_count_(0), qos_ops_(
+        qos_ops)
+{
+  //Tell the DDSBroker to precreate a writer to avoid performance lag
+  ROSDDS::DDSBroker::instance()->createWriter(name_, latch, qos_ops_);
 }
 
 Publication::~Publication()
@@ -113,7 +150,9 @@ void Publication::addCallbacks(const SubscriberCallbacksPtr& callbacks)
     for (; it != end; ++it)
     {
       const SubscriberLinkPtr& sub_link = *it;
-      CallbackInterfacePtr cb(new PeerConnDisconnCallback(callbacks->connect_, sub_link, callbacks->has_tracked_object_, callbacks->tracked_object_));
+      CallbackInterfacePtr cb(
+          new PeerConnDisconnCallback(callbacks->connect_, sub_link, callbacks->has_tracked_object_,
+                                      callbacks->tracked_object_));
       callbacks->callback_queue_->addCallback(cb, (uint64_t)callbacks.get());
     }
   }
@@ -178,12 +217,14 @@ bool Publication::enqueueMessage(const SerializedMessage& m)
     ser::serialize(ostream, header);
   }
 
-  for(V_SubscriberLink::iterator i = subscriber_links_.begin();
-      i != subscriber_links_.end(); ++i)
+  for (V_SubscriberLink::iterator i = subscriber_links_.begin(); i != subscriber_links_.end(); ++i)
   {
     const SubscriberLinkPtr& sub_link = (*i);
     sub_link->enqueueMessage(m, true, false);
   }
+
+  // We always publish the message on DDS
+  ROSDDS::DDSBroker::instance()->publishMsg(getName(), m);
 
   if (latch_)
   {
@@ -262,8 +303,7 @@ XmlRpc::XmlRpcValue Publication::getStats()
   boost::mutex::scoped_lock lock(subscriber_links_mutex_);
 
   uint32_t cidx = 0;
-  for (V_SubscriberLink::iterator c = subscriber_links_.begin();
-       c != subscriber_links_.end(); ++c, cidx++)
+  for (V_SubscriberLink::iterator c = subscriber_links_.begin(); c != subscriber_links_.end(); ++c, cidx++)
   {
     const SubscriberLink::Stats& s = (*c)->getStats();
     conn_data[cidx][0] = (*c)->getConnectionID();
@@ -288,8 +328,7 @@ void Publication::getInfo(XmlRpc::XmlRpcValue& info)
 {
   boost::mutex::scoped_lock lock(subscriber_links_mutex_);
 
-  for (V_SubscriberLink::iterator c = subscriber_links_.begin();
-       c != subscriber_links_.end(); ++c)
+  for (V_SubscriberLink::iterator c = subscriber_links_.begin(); c != subscriber_links_.end(); ++c)
   {
     XmlRpc::XmlRpcValue curr_info;
     curr_info[0] = (int)(*c)->getConnectionID();
@@ -315,8 +354,7 @@ void Publication::dropAllConnections()
     local_publishers.swap(subscriber_links_);
   }
 
-  for (V_SubscriberLink::iterator i = local_publishers.begin();
-           i != local_publishers.end(); ++i)
+  for (V_SubscriberLink::iterator i = local_publishers.begin(); i != local_publishers.end(); ++i)
   {
     (*i)->drop();
   }
@@ -331,7 +369,8 @@ void Publication::peerConnect(const SubscriberLinkPtr& sub_link)
     const SubscriberCallbacksPtr& cbs = *it;
     if (cbs->connect_ && cbs->callback_queue_)
     {
-      CallbackInterfacePtr cb(new PeerConnDisconnCallback(cbs->connect_, sub_link, cbs->has_tracked_object_, cbs->tracked_object_));
+      CallbackInterfacePtr cb(
+          new PeerConnDisconnCallback(cbs->connect_, sub_link, cbs->has_tracked_object_, cbs->tracked_object_));
       cbs->callback_queue_->addCallback(cb, (uint64_t)cbs.get());
     }
   }
@@ -346,7 +385,8 @@ void Publication::peerDisconnect(const SubscriberLinkPtr& sub_link)
     const SubscriberCallbacksPtr& cbs = *it;
     if (cbs->disconnect_ && cbs->callback_queue_)
     {
-      CallbackInterfacePtr cb(new PeerConnDisconnCallback(cbs->disconnect_, sub_link, cbs->has_tracked_object_, cbs->tracked_object_));
+      CallbackInterfacePtr cb(
+          new PeerConnDisconnCallback(cbs->disconnect_, sub_link, cbs->has_tracked_object_, cbs->tracked_object_));
       cbs->callback_queue_->addCallback(cb, (uint64_t)cbs.get());
     }
   }
@@ -394,8 +434,21 @@ void Publication::getPublishTypes(bool& serialize, bool& nocopy, const std::type
   }
 }
 
+bool Publication::isQoSCompatible(const AdvertiseQoSOptions& required_qos_ops)
+{
+  //check qos compatibility
+  if (((qos_ops_.using_best_effort_protocol == true) && (required_qos_ops.using_best_effort_protocol == false))
+      || (qos_ops_.data_centric_update != required_qos_ops.data_centric_update)
+      || (qos_ops_.latency_budget > required_qos_ops.latency_budget)
+      || (qos_ops_.transport_priority != required_qos_ops.transport_priority))
+    return false;
+
+  return true;
+}
+
 bool Publication::hasSubscribers()
 {
+  //TODO: DDS subscribers?
   boost::mutex::scoped_lock lock(subscriber_links_mutex_);
   return !subscriber_links_.empty();
 }
@@ -457,9 +510,8 @@ void Publication::processPublishQueue()
 bool Publication::validateHeader(const Header& header, std::string& error_msg)
 {
   std::string md5sum, topic, client_callerid;
-  if (!header.getValue("md5sum", md5sum)
-   || !header.getValue("topic", topic)
-   || !header.getValue("callerid", client_callerid))
+  if (!header.getValue("md5sum", md5sum) || !header.getValue("topic", topic)
+      || !header.getValue("callerid", client_callerid))
   {
     std::string msg("Header from subscriber did not have the required elements: md5sum, topic, callerid");
 
@@ -473,10 +525,10 @@ bool Publication::validateHeader(const Header& header, std::string& error_msg)
   // advertised_topics through a call to unadvertise(), which could
   // have happened while we were waiting for the subscriber to
   // provide the md5sum.
-  if(isDropped())
+  if (isDropped())
   {
-    std::string msg = std::string("received a tcpros connection for a nonexistent topic [") +
-                topic + std::string("] from [" + client_callerid +"].");
+    std::string msg = std::string("received a tcpros connection for a nonexistent topic [") + topic
+        + std::string("] from [" + client_callerid + "].");
 
     ROS_ERROR("%s", msg.c_str());
     error_msg = msg;
@@ -484,16 +536,14 @@ bool Publication::validateHeader(const Header& header, std::string& error_msg)
     return false;
   }
 
-  if (getMD5Sum() != md5sum &&
-      (md5sum != std::string("*") && getMD5Sum() != std::string("*")))
+  if (getMD5Sum() != md5sum && (md5sum != std::string("*") && getMD5Sum() != std::string("*")))
   {
     std::string datatype;
     header.getValue("type", datatype);
 
-    std::string msg = std::string("Client [") + client_callerid + std::string("] wants topic ") + topic +
-                      std::string(" to have datatype/md5sum [") + datatype + "/" + md5sum +
-                      std::string("], but our version has [") + getDataType() + "/" + getMD5Sum() +
-                      std::string("]. Dropping connection.");
+    std::string msg = std::string("Client [") + client_callerid + std::string("] wants topic ") + topic
+        + std::string(" to have datatype/md5sum [") + datatype + "/" + md5sum + std::string("], but our version has [")
+        + getDataType() + "/" + getMD5Sum() + std::string("]. Dropping connection.");
 
     ROS_ERROR("%s", msg.c_str());
     error_msg = msg;
